@@ -1,5 +1,5 @@
 # Use a multi-stage build to reduce the size of the final image
-FROM eclipse-temurin:${BASE_IMAGE_TAG:-21.0.2_13-jdk} as builder
+FROM eclipse-temurin:${BASE_IMAGE_TAG:-21.0.2_13-jdk}-alpine as builder
 
 ARG SCALA_VERSION=3.4.0
 ARG SBT_VERSION=1.9.9
@@ -29,10 +29,21 @@ RUN \
     curl -fsL https://github.com/sbt/sbt/releases/download/v$SBT_VERSION/sbt-$SBT_VERSION.tgz | tar xfz - -C /usr/local && \
     $(mv /usr/local/sbt-launcher-packaging-$SBT_VERSION /usr/local/sbt || true) && \
     ln -s /usr/local/sbt/bin/* /usr/local/bin/ && \
-    sbt -Dsbt.rootdir=true -batch sbtVersion && \
-    apk del .build-dependencies && \
-    rm -rf "/tmp/"* && \
-    rm -rf /var/cache/apk/*
+    sbt -Dsbt.rootdir=true -batch sbtVersion
+    
+# Prepare sbt (warm cache)
+RUN \
+  mkdir -p project && \
+  echo "scalaVersion := \"${SCALA_VERSION}\"" > build.sbt && \
+  echo "sbt.version=${SBT_VERSION}" > project/build.properties && \
+  echo "// force sbt compiler-bridge download" > project/Dependencies.scala && \
+  echo "case object Temp" > Temp.scala && \
+  sbt -Dsbt.rootdir=true sbtVersion && \
+  sbt -Dsbt.rootdir=true compile && \
+  rm -r project && rm build.sbt && rm Temp.scala && rm -r target && \
+  apk del .build-dependencies && \
+  rm -rf "/tmp/"* && \
+  rm -rf /var/cache/apk/*
 
 # Start a new stage for the final image
 FROM eclipse-temurin:${BASE_IMAGE_TAG:-21.0.2_13-jdk}-alpine
@@ -54,17 +65,6 @@ USER sbtuser
 
 # Switch working directory
 WORKDIR /home/sbtuser
-
-# Prepare sbt (warm cache)
-RUN \
-  mkdir -p project && \
-  echo "scalaVersion := \"${SCALA_VERSION}\"" > build.sbt && \
-  echo "sbt.version=${SBT_VERSION}" > project/build.properties && \
-  echo "// force sbt compiler-bridge download" > project/Dependencies.scala && \
-  echo "case object Temp" > Temp.scala && \
-  sbt sbtVersion && \
-  sbt compile && \
-  rm -r project && rm build.sbt && rm Temp.scala && rm -r target
 
 # Link everything into root as well
 # This allows users of this container to choose, whether they want to run the container as sbtuser (non-root) or as root
